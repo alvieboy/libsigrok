@@ -673,6 +673,13 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/zketech-ebd-usb/protocol.c \
 	src/hardware/zketech-ebd-usb/api.c
 endif
+if HW_ZXINTERFACEZ
+src_libdrivers_la_SOURCES += \
+	src/hardware/zxinterfacez/protocol.c \
+	src/hardware/zxinterfacez/api.c \
+	src/hardware/zxinterfacez/hdlc_encoder.c \
+	src/hardware/zxinterfacez/hdlc_decoder.c
+endif
 
 libsigrok_la_LIBADD = src/libdrivers.lo $(SR_EXTRA_LIBS) $(LIBSIGROK_LIBS)
 libsigrok_la_LDFLAGS = -version-info $(SR_LIB_VERSION) -no-undefined
