@@ -54,6 +54,15 @@ enum zxinterfacez_state {
 };
 
 
+typedef enum {
+    SCOPE_GROUP_NONTRIG = 0,
+    SCOPE_GROUP_TRIG = 1
+} scope_group_t;
+
+#define MAX_CHANNELS_PER_GROUP 32
+typedef char *channel_names_t[MAX_CHANNELS_PER_GROUP];
+
+
 struct dev_context {
         uint32_t dummy;
         uint32_t cur_samplerate;
@@ -63,8 +72,10 @@ struct dev_context {
         uint32_t trigger_value;
         uint32_t trigger_edge;
         enum zxinterfacez_state state;
-        //guint poll_timer_id;
-       // guint cmd_timer_id;
+
+        uint8_t group_num_channels[2];
+        channel_names_t channel_names[2];
+
         uint8_t cmd;
         int expected_len;
         uint8_t  fetch_ram;
@@ -106,8 +117,8 @@ int send_receive_cmd_async(const struct sr_dev_inst *sdi,
                            int expected_len);
 
 int zxinterfacez_stop(const struct sr_dev_inst *sdi);
-int zxinterfacez_nontrig_size(void);
-int zxinterfacez_trig_size(void);
+int zxinterfacez_nontrig_size(struct dev_context*);
+int zxinterfacez_trig_size(struct dev_context*);
 
 
 

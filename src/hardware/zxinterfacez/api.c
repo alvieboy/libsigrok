@@ -50,65 +50,6 @@ static const int32_t trigger_matches[] = {
         SR_TRIGGER_FALLING
 };
 
-
-/* Channels are numbered 0-31 (on the PCB silkscreen). */
-SR_PRIV const char *zxiterfacez_channel_names_nontrig[] = {
-    "D0",
-    "D1",
-    "D2",
-    "D3",
-    "D4",
-    "D5",
-    "D6",
-    "D7",
-    "FORCEROMCS0",
-    "FORCEROMCS2A"
-};
-
-SR_PRIV const char *zxiterfacez_channel_names_trig[] = {
-    "A0",
-    "A1",
-    "A2",
-    "A3",
-    "A4",
-    "A5",
-    "A6",
-    "A7",
-    "A8",
-    "A9",
-    "A10",
-    "A11",
-    "A12",
-    "A13",
-    "A14",
-    "A15",
-    "/CK",
-    "/INT",
-    "/MREQ",
-    "/IORQ",
-    "/RD",
-    "/WR",
-    "/M1",
-    "/RFSH",
-    "/WAIT",
-    "/NMI",
-    "/RESET",
-    "FORCEROMCS",
-    "FORCEIORQULA",
-    "USB_INT",
-    "/CMD_INT"
-};
-
-int zxinterfacez_nontrig_size()
-{
-    return sizeof(zxiterfacez_channel_names_nontrig)/sizeof(zxiterfacez_channel_names_nontrig[0]);
-}
-
-int zxinterfacez_trig_size()
-{
-    return sizeof(zxiterfacez_channel_names_trig)/sizeof(zxiterfacez_channel_names_trig[0]);
-}
-
 /* Default supported samplerates, can be overridden by device metadata. */
 static const uint64_t samplerates[] = {
 	SR_MHZ(96),
@@ -133,7 +74,122 @@ static char *check_version_reply()
 	return NULL;
 }
 
+static void free_signal_group_names(struct dev_context *devc, scope_group_t group)
+{
+    unsigned i;
+    for (i=0;i<MAX_CHANNELS_PER_GROUP;i++) {
+        if (devc->channel_names[(int)group][i]!=NULL) {
+            free( devc->channel_names[(int)group][i] );
+            devc->channel_names[(int)group][i] = NULL;
+        }
+    }
 
+}
+static void free_signal_names(struct dev_context *devc)
+{
+    free_signal_group_names(devc, SCOPE_GROUP_NONTRIG);
+    free_signal_group_names(devc, SCOPE_GROUP_TRIG);
+}
+
+static int scan_null(const uint8_t *ptr, int len)
+{
+    int pos = -1;
+
+    if (len==0)
+        return -1;
+
+    do {
+        pos++;
+        if (*ptr=='\0')
+            return pos;
+        ptr++, len--;
+
+    } while (len>0);
+    if (len<0)
+        pos=-1;
+    return pos;
+}
+
+static const uint8_t *scan_post_null(const uint8_t *ptr, int *len)
+{
+    int delta = scan_null(ptr, *len);
+    if (delta<0)
+        return NULL;
+    if ((*len)==delta)
+        return NULL; // No more data
+    *len = *len - delta;
+    return ptr+delta+1;
+}
+
+static int build_group_names(struct dev_context *devc, scope_group_t group, const uint8_t **ptr, int *len)
+{
+    uint8_t grouplen = **ptr;
+    int r = -1;
+
+    if (*len<1) {
+        return r;
+    }
+
+    sr_info("Channels: %d", (int)grouplen);
+
+    (*ptr)++, (*len)--;
+    do {
+        // Load group names.
+        for (unsigned i=0;i<grouplen;i++) {
+            int chanlen = scan_null(*ptr,*len);
+            if (chanlen<0) {
+                sr_err("Cannot load name for index %d", i);
+                break;
+            }
+            devc->channel_names[group][i] = g_strdup((const char*)*ptr);
+
+            (*ptr) += chanlen;
+            (*len) -= chanlen;
+            // Move past null;
+            if ((*len)<1)
+                break;
+            (*ptr)++, (*len)--;
+            sr_info("Channel %d: %s\n", i, devc->channel_names[group][i]);
+        }
+        r = grouplen;
+    } while (0);
+    return r;
+}
+
+static int build_signal_names(struct dev_context *devc)
+{
+    const uint8_t *ptr = zxinterfacez_get_last_reply();
+    int len = zxinterfacez_get_last_reply_size();
+
+    int delta;
+    int r = -1;
+
+    free_signal_names(devc);
+    devc->group_num_channels[SCOPE_GROUP_NONTRIG] = 0;
+    devc->group_num_channels[SCOPE_GROUP_TRIG] = 0;
+
+    // 1st, move past version NULL indicator
+    do {
+        ptr = scan_post_null(ptr, &len);
+        if (ptr==NULL) {
+            break;
+        }
+        int grouplen = build_group_names(devc, SCOPE_GROUP_NONTRIG, &ptr, &len);
+        if (grouplen<0)
+            break;
+        devc->group_num_channels[SCOPE_GROUP_NONTRIG] = grouplen;
+
+        grouplen = build_group_names(devc, SCOPE_GROUP_TRIG, &ptr, &len);
+        if (grouplen<0)
+            break;
+        devc->group_num_channels[SCOPE_GROUP_TRIG] = grouplen;
+        r = 0;
+
+    } while (0);
+
+    
+    return r;
+}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -174,14 +230,15 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
     if (serial_open(serial, SERIAL_RDWR) != SR_OK)
         return NULL;
 
-    uint8_t hdlc_decoder_buf[64];
+    uint8_t hdlc_decoder_buf[512];
 
     zxinterfacez_setup_comms(serial,
 			     hdlc_decoder_buf,
 			     sizeof(hdlc_decoder_buf)
 			    );
 
-    uint8_t vreply[32];
+    uint8_t vreply[512];
+
     if (send_receive_cmd(serial, 0x01, NULL, 0, -1, vreply)<0) {
         sr_dbg("No reply");
         serial_close(serial);
@@ -194,22 +251,32 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
     }
 
     sdi = g_malloc0(sizeof(struct sr_dev_inst));
+
+    devc = zxinterfacez_dev_new(sdi);
+
+    if (build_signal_names(devc)<0) {
+        sr_err("Cannot build signal names");
+        free(devc);
+        serial_close(serial);
+        return NULL;
+    }
+
     sdi->status = SR_ST_INACTIVE;
     sdi->vendor = g_strdup("Alvie");
     sdi->model =  g_strdup("ZX Interface Z");
     sdi->version = version;
 
-    devc = zxinterfacez_dev_new(sdi);
 
     sdi->priv = devc;
+
 
     devc->nontrig_group = g_malloc0(sizeof(struct sr_channel_group));
     devc->trig_group = g_malloc0(sizeof(struct sr_channel_group));
 
-    for (i = 0; i < ARRAY_SIZE(zxiterfacez_channel_names_nontrig); i++) {
-	    struct sr_channel *ch = sr_channel_new(sdi, chan_index, SR_CHANNEL_LOGIC, TRUE, zxiterfacez_channel_names_nontrig[i]);
-	    devc->nontrig_group->channels = g_slist_append(devc->nontrig_group->channels, ch);
-	    chan_index++;
+    for (i = 0; i < devc->group_num_channels[SCOPE_GROUP_NONTRIG]; i++) {
+        struct sr_channel *ch = sr_channel_new(sdi, chan_index, SR_CHANNEL_LOGIC, TRUE, devc->channel_names[SCOPE_GROUP_NONTRIG][i]);
+        devc->nontrig_group->channels = g_slist_append(devc->nontrig_group->channels, ch);
+        chan_index++;
     }
 
     devc->nontrig_group->name = g_strdup("NT");
@@ -219,9 +286,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 
     // Triggering group
-    for (i = 0; i < ARRAY_SIZE(zxiterfacez_channel_names_trig); i++) {
-	    struct sr_channel *ch = sr_channel_new(sdi, chan_index, SR_CHANNEL_LOGIC, TRUE, zxiterfacez_channel_names_trig[i]);
-	    devc->trig_group->channels = g_slist_append(devc->trig_group->channels, ch);
+    for (i = 0; i < devc->group_num_channels[SCOPE_GROUP_TRIG]; i++) {
+	    struct sr_channel *ch = sr_channel_new(sdi, chan_index, SR_CHANNEL_LOGIC, TRUE,  devc->channel_names[SCOPE_GROUP_TRIG][i]);
+            devc->trig_group->channels = g_slist_append(devc->trig_group->channels, ch);
 	    chan_index++;
     }
 
@@ -370,7 +437,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 
 	std_session_send_df_end(sdi);
 
-        sr_dev_close(sdi);
+//        sr_dev_close(sdi);
 
 	return SR_OK;
 }

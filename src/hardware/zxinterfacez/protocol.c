@@ -49,6 +49,15 @@ static int zxinterfacez_fetch_samples(const struct sr_dev_inst *sdi);
 static int zxinterfacez_timer_elapsed(int fd, int revents, void *user_data);
 
 
+int zxinterfacez_nontrig_size(struct dev_context*devc)
+{
+    return devc->group_num_channels[SCOPE_GROUP_NONTRIG];
+}
+
+int zxinterfacez_trig_size(struct dev_context*devc)
+{
+    return devc->group_num_channels[SCOPE_GROUP_TRIG];
+}
 
 static void zxinterfacez_enter_state(struct dev_context *devc, enum zxinterfacez_state newstate)
 {
@@ -174,9 +183,9 @@ SR_PRIV int zxinterfacez_convert_trigger(const struct sr_dev_inst *sdi)
                 int index = match->channel->index;
 
 
-                if (index<zxinterfacez_nontrig_size())
+                if (index < zxinterfacez_nontrig_size(devc))
                         continue; // Not triggerable
-                index -= zxinterfacez_nontrig_size();
+                index -= zxinterfacez_nontrig_size(devc);
 
                 uint32_t mask = (1<<index);
 
@@ -371,7 +380,7 @@ SR_PRIV int send_receive_cmd(struct sr_serial_dev_inst *serial,
                              int expected_len,
                              uint8_t *rx)
 {
-        unsigned timeout  = 200;
+        unsigned timeout  = 20000;
         last_reply = NULL;
 
         sr_dbg("Sending cmd %02x",cmd);
@@ -412,7 +421,7 @@ SR_PRIV int send_receive_cmd(struct sr_serial_dev_inst *serial,
                         return last_reply_size;
                 }
 
-                g_usleep(10000);
+                g_usleep(100);
         }
         return -1;
 }
@@ -569,7 +578,7 @@ static uint8_t *zxinterfacez_convert_single_sample(struct dev_context *devc, uns
         unsigned mask = 0x01;
         int i;
 
-        for (i=0; i<zxinterfacez_nontrig_size();i++) {
+        for (i=0; i<zxinterfacez_nontrig_size(devc);i++) {
             if (nontrig&1) {
                 *dest |= mask;
             } else {
@@ -585,7 +594,7 @@ static uint8_t *zxinterfacez_convert_single_sample(struct dev_context *devc, uns
 
         uint32_t trig = extractle32(&devc->samples[0][start*4]);
 
-        for (i=0; i<zxinterfacez_trig_size();i++) {
+        for (i=0; i<zxinterfacez_trig_size(devc);i++) {
             if (trig&1) {
                 *dest |= mask;
             } else {
@@ -638,9 +647,9 @@ static int zxinterfacez_convert_samples(struct dev_context *devc, uint8_t **trig
         return 0;
 }
 
-static int zxinterfacez_unitsize()
+static int zxinterfacez_unitsize(struct dev_context *devc)
 {
-    unsigned numbits = zxinterfacez_nontrig_size() + zxinterfacez_trig_size();
+    unsigned numbits = zxinterfacez_nontrig_size(devc) + zxinterfacez_trig_size(devc);
     numbits+=7;
     return numbits>>3;
 }
@@ -661,8 +670,8 @@ static int zxinterfacez_samples_ready(const struct sr_dev_inst *sdi)
         /* There are pre-trigger samples, send those first. */
         packet.type = SR_DF_LOGIC;
         packet.payload = &logic;
-        logic.length = zxinterfacez_get_pre_trigger_samples(devc) * zxinterfacez_unitsize();
-        logic.unitsize = zxinterfacez_unitsize();
+        logic.length = zxinterfacez_get_pre_trigger_samples(devc) * zxinterfacez_unitsize(devc);
+        logic.unitsize = zxinterfacez_unitsize(devc);
         logic.data = &devc->converted_samples[0];
 
         sr_session_send(sdi, &packet);
@@ -675,8 +684,8 @@ static int zxinterfacez_samples_ready(const struct sr_dev_inst *sdi)
         /* Send post-trigger. */
         packet.type = SR_DF_LOGIC;
         packet.payload = &logic;
-        logic.length = zxinterfacez_get_post_trigger_samples(devc) * zxinterfacez_unitsize();
-        logic.unitsize = zxinterfacez_unitsize();
+        logic.length = zxinterfacez_get_post_trigger_samples(devc) * zxinterfacez_unitsize(devc);
+        logic.unitsize = zxinterfacez_unitsize(devc);
         logic.data = triggerpoint;
 
         sr_session_send(sdi, &packet);
